@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"google.golang.org/grpc"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -14,6 +16,19 @@ import (
 	"github.com/gusaul/grpcox/handler"
 )
 
+func grpcHandlerFunc(rpcServer *grpc.Server, otherHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("content-type header: %v, method: %v", r.Header.Get("Content-Type"), r.Method)
+		if r.ProtoMajor == 2 && (strings.Contains(r.Header.Get("Content-Type"), "application/grpc") || r.Method == "PRI") {
+			log.Printf("handling gRPC request")
+			rpcServer.ServeHTTP(w, r)
+			return
+		}
+
+		log.Printf("handling regular HTTP1.x/2 request")
+		otherHandler.ServeHTTP(w, r)
+	})
+}
 func main() {
 	// logging conf
 	f, err := os.OpenFile("log/grpcox.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
@@ -32,13 +47,13 @@ func main() {
 	muxRouter := mux.NewRouter()
 	handler.Init(muxRouter)
 	var wait time.Duration = time.Second * 15
-
+	s := grpc.NewServer()
 	srv := &http.Server{
 		Addr:         addr,
 		WriteTimeout: time.Second * 15,
 		ReadTimeout:  time.Second * 15,
 		IdleTimeout:  time.Second * 60,
-		Handler:      muxRouter,
+		Handler:      grpcHandlerFunc(s, muxRouter),
 	}
 
 	fmt.Println("Service started on", addr)
